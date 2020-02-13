@@ -7,7 +7,7 @@
   - Set the `Redemption Title` to the same as the redemption that will activate the image display
   - Set the `Media Folder` to the directory that will be used for the random media files
   - Modify the `Media Extensions` (semicolon delimited list), `Fade Duration`, and `Show Duration` as desired
-- The plugin will automatically create an image source named `_cpd_image`. Do not rename this since it relies on the name.
+- The plugin will automatically create an image source named `_cpd_image`. Do not rename this since the plugin relies on the name.
 
 ### Special Thanks
 - OBS for the streaming software
