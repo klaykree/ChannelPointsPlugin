@@ -1,5 +1,5 @@
 ## Instructions
-- Add both dll files to the `obs-studio\obs-plugins\64bit` folder in your OBS install location
+- Add both .dll files to the `obs-studio\obs-plugins\64bit` folder in your OBS install location
 - Add a `Channel Points Display` source to your scene
 - Properties:
   - Set the `Channel Name` to the same as your streaming channel name
