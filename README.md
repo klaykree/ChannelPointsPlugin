@@ -1,6 +1,6 @@
 ## Instructions
-- Install [VC++ Redistributable](https://aka.ms/vs/16/release/vc_redist.x64.exe)
-- Install [new Edge browser](https://www.microsoft.com/en-us/edge)
+- Install the latest [VC++ Redistributable](https://aka.ms/vs/16/release/vc_redist.x64.exe)
+- Install the [new Edge browser](https://www.microsoft.com/en-us/edge)
 - Add both .dll files to the `obs-studio\obs-plugins\64bit` folder in your OBS install location.
 - Add a `Channel Points Display` source to your scene.
 - Properties:
