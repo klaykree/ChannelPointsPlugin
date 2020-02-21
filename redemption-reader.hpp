@@ -7,10 +7,12 @@
 extern "C" {
 #endif
 
+extern void (*InitialisedCallback)();
+
 int GetLatestRedemption(struct darray* Redemptions, int RedemptionCount);
 void StartRedemptionReader();
 void StopRedemptionReader();
-void ChangeChannelURL(const char* ChannelName);
+bool ChangeChannelURL(const char* ChannelName);
 
 #ifdef __cplusplus
 }

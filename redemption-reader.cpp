@@ -11,6 +11,7 @@
 #include "WebView2.h"
 #include <queue>
 #include <Shlobj.h>
+#include <mutex>
 
 using namespace Microsoft::WRL;
 
@@ -32,9 +33,13 @@ HANDLE MutationsTimer;
 HANDLE MutationsTimerQueue;
 DWORD MutationsTimerInterval = 1000;
 
+std::mutex MutationsMutex;
+
 MSG msg;
 
 bool Initialised = false;
+
+void (*InitialisedCallback)(void) = NULL;
 
 HANDLE MessageLoopThread = NULL;
 
@@ -109,8 +114,6 @@ void MakeWebView()
 	ShowWindow(hwnd, SW_SHOWDEFAULT);
 	UpdateWindow(hwnd);
 
-	ShowWindow(hwnd, SW_HIDE);
-
 	// Step 3 - Create a single WebView within the parent window
 	// Locate the browser and set up the environment for WebView
 	PWSTR AppDataLocal;
@@ -156,7 +159,14 @@ void MakeWebView()
 									__webview_observers__[$$expectedId] = {\
 											observer: new MutationObserver(function(mutations) {\
 												if(mutations[0]['addedNodes'].length > 0) {\
-													__webview_observers__[$$expectedId].mutations.push(mutations[0]['addedNodes'][0].textContent.toLowerCase());\
+													let addedNode = mutations[0]['addedNodes'][0];\
+													if(addedNode.children.length > 0) {\
+														console.log('before check ' + addedNode.children[0].className);\
+														if(addedNode.children[0].className.includes('channel-points-reward-line')) {\
+															__webview_observers__[$$expectedId].mutations.push(addedNode.children[0].textContent.toLowerCase());\
+															console.log('after check ' + addedNode.children[0].className);\
+														}\
+													}\
 												}\
 											})\
 									};\
@@ -168,6 +178,11 @@ void MakeWebView()
 
 						Initialised = true;
 
+						ShowWindow(hwnd, SW_HIDE);
+
+						if(InitialisedCallback != NULL)
+							InitialisedCallback();
+
 						return S_OK;
 					}).Get());
 				return S_OK;
@@ -176,6 +191,9 @@ void MakeWebView()
 
 void TryRetrieveMutation()
 {
+	ShowWindow(hwnd, SW_HIDE);
+	UpdateWindow(hwnd);
+
 	HRESULT result = WebviewWindow->ExecuteScript(
 		//general message: "justinfan54: hi" (with quotes)
 		//redemption: "klaykree redeemed nice69" (with quotes)
@@ -192,15 +210,17 @@ void TryRetrieveMutation()
 
 				if(Result != L"null")
 				{
-					std::wstring Redeemed = L" redeemed ";
-					size_t RedeemedIndex = Result.find(Redeemed);
-					if(RedeemedIndex != std::wstring::npos)
+					//std::wstring Redeemed = L"redeemed ";
+					//size_t RedeemedIndex = Result.find(Redeemed);
+					//if(RedeemedIndex != std::wstring::npos)
 					{
-						size_t ColonIndex = Result.find(':');
-						if(ColonIndex != std::wstring::npos && ColonIndex < RedeemedIndex)
-						{
-							return S_OK; //Skip this mutation because a colon before " redeemed " would mean its a chat message
-						}
+						//size_t ColonIndex = Result.find(':');
+						//if(ColonIndex != std::wstring::npos && ColonIndex < RedeemedIndex)
+						//{
+						//	return S_OK; //Skip this mutation because a colon before " redeemed " would mean its a chat message
+						//}
+
+						const std::scoped_lock<std::mutex> lock(MutationsMutex);
 
 						//Add the mutation
 						Mutations.push(Result);
@@ -212,6 +232,8 @@ void TryRetrieveMutation()
 
 int GetLatestRedemption(struct darray* Redemptions, int RedemptionCount)
 {
+	const std::scoped_lock<std::mutex> lock(MutationsMutex);
+
 	if(Mutations.empty() && QueuedRedemptions.empty())
 		return -1;
 
@@ -222,7 +244,12 @@ int GetLatestRedemption(struct darray* Redemptions, int RedemptionCount)
 
 		for(int i = 0 ; i < RedemptionCount ; ++i)
 		{
-			struct RedemptionData* Redemption = (RedemptionData*)darray_item(sizeof(RedemptionData), Redemptions, i);
+			if(i >= Redemptions->num)
+			{
+				break;
+			}
+
+			RedemptionData* Redemption = (RedemptionData*)darray_item(sizeof(RedemptionData), Redemptions, i);
 
 			int size_needed = MultiByteToWideChar(CP_UTF8, 0, Redemption->Title.array, (int)Redemption->Title.len, NULL, 0);
 			std::wstring Title(size_needed, 0);
@@ -230,7 +257,7 @@ int GetLatestRedemption(struct darray* Redemptions, int RedemptionCount)
 
 			if(Title != L"" && Mutation.find(Title) != std::wstring::npos)
 			{
-				std::wstring Redeemed = L" redeemed ";
+				std::wstring Redeemed = L"redeemed ";
 				size_t RedeemedIndex = Mutation.find(Redeemed);
 				if(RedeemedIndex != std::wstring::npos)
 				{
@@ -258,24 +285,24 @@ int GetLatestRedemption(struct darray* Redemptions, int RedemptionCount)
 	return -1;
 }
 
-void ChangeChannelURL(const char* ChannelName)
+bool ChangeChannelURL(const char* ChannelName)
 {
-	if(ChannelName != NULL && strlen(ChannelName) > 0)
+	ChannelURL = L"https://www.twitch.tv/embed/";
+
+	int size_needed = MultiByteToWideChar(CP_UTF8, 0, ChannelName, (int)strlen(ChannelName), NULL, 0);
+	std::wstring WChanneName(size_needed, 0);
+	MultiByteToWideChar(CP_UTF8, 0, ChannelName, (int)strlen(ChannelName), &WChanneName[0], size_needed);
+
+	ChannelURL.append(WChanneName);
+	ChannelURL.append(L"/chat");
+
+	if(WebviewWindow != nullptr)
 	{
-		ChannelURL = L"https://www.twitch.tv/embed/";
-
-		int size_needed = MultiByteToWideChar(CP_UTF8, 0, ChannelName, (int)strlen(ChannelName), NULL, 0);
-		std::wstring WChanneName(size_needed, 0);
-		MultiByteToWideChar(CP_UTF8, 0, ChannelName, (int)strlen(ChannelName), &WChanneName[0], size_needed);
-
-		ChannelURL.append(WChanneName);
-		ChannelURL.append(L"/chat");
-
-		if(WebviewWindow != nullptr)
-		{
-			WebviewWindow->Navigate(ChannelURL.c_str());
-		}
+		WebviewWindow->Navigate(ChannelURL.c_str());
+		return true;
 	}
+
+	return false;
 }
 
 void StartRedemptionReader()
@@ -291,6 +318,7 @@ void StartRedemptionReader()
 
 void StopRedemptionReader()
 {
+	DeleteTimerQueueEx(MutationsTimerQueue, NULL);
 	SendMessage(hwnd, WM_CLOSE, 0, 0);
 }
 
@@ -331,8 +359,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	switch(message)
 	{
 	case WM_CLOSE:
-		DeleteTimerQueue(MutationsTimerQueue);
-
 		if(WebviewWindow != nullptr)
 		{
 			WebviewWindow->Close();

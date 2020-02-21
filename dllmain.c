@@ -12,6 +12,8 @@
 #include "redemption-reader.hpp"
 #include "redemption-data.hpp"
 
+#define MAX_REDEMPTION_COUNT 40
+
 static bool TryStartShowingRedemption(void* data, RedemptionData* Redemption);
 
 enum State { State_Read, State_FadeIn, State_Wait, State_FadeOut };
@@ -25,7 +27,9 @@ struct channelpoints_data {
 	int RedemptionCount;
 	struct darray Redemptions;
 	pthread_t Thread;
-	HANDLE Timer;
+	HANDLE TickThread;
+	bool Ticking;
+	HANDLE TimerHandle;
 	HANDLE TimerQueue;
 	enum State CurrentState;
 	os_event_t* Event;
@@ -37,6 +41,8 @@ struct channelpoints_data {
 	obs_sceneitem_t* ImageItem;
 	obs_source_t* AlphaFilter;
 };
+
+struct channelpoints_data* CPD;
 
 static long long GetOpacity(void* data)
 {
@@ -131,16 +137,82 @@ static bool TryGetRedemption(void* data)
 	}
 }
 
+DWORD WINAPI Tick(LPVOID lpParam)
+{
+	struct channelpoints_data* cpd = lpParam;
+
+	LARGE_INTEGER Frequency;
+	LARGE_INTEGER StartingTime, EndingTime, ElapsedMicroseconds;
+	LARGE_INTEGER Timer = { 0 };
+
+	cpd->Ticking = true;
+
+	while(cpd->Ticking)
+	{
+		QueryPerformanceFrequency(&Frequency);
+		QueryPerformanceCounter(&StartingTime);
+
+		//Sleep just a bit to not completely thrash the thread
+		os_sleep_ms(7);
+
+		QueryPerformanceCounter(&EndingTime);
+		ElapsedMicroseconds.QuadPart = EndingTime.QuadPart - StartingTime.QuadPart;
+
+		ElapsedMicroseconds.QuadPart *= 1000;
+		ElapsedMicroseconds.QuadPart /= Frequency.QuadPart;
+
+		//Update a timer to check for redemptions at intervals and for the fading in/out
+		//Cant use Sleep because it would halt obs from closing until the sleep is complete
+		Timer.QuadPart += ElapsedMicroseconds.QuadPart;
+
+		if(cpd->CurrentState == State_Read && Timer.QuadPart >= 1000)
+		{
+			Timer.QuadPart -= 1000;
+			if(TryGetRedemption(cpd))
+			{
+				cpd->CurrentState = State_FadeIn;
+			}
+		}
+
+		if(cpd->CurrentState == State_FadeIn && Timer.QuadPart >= cpd->CurrentRedemptionShown->FadeDuration / 100)
+		{
+			if(IncrementImageAlpha(cpd))
+			{
+				cpd->CurrentState = State_Wait;
+			}
+			Timer.QuadPart -= cpd->CurrentRedemptionShown->FadeDuration / 100;
+		}
+		else if(cpd->CurrentState == State_Wait && Timer.QuadPart >= cpd->CurrentRedemptionShown->ShowDuration)
+		{
+			cpd->CurrentState = State_FadeOut;
+			Timer.QuadPart -= cpd->CurrentRedemptionShown->ShowDuration;
+		}
+		else if(cpd->CurrentState == State_FadeOut && Timer.QuadPart >= cpd->CurrentRedemptionShown->FadeDuration / 100)
+		{
+			if(DecrementImageAlpha(cpd))
+			{
+				cpd->CurrentState = State_Read;
+			}
+			Timer.QuadPart -= cpd->CurrentRedemptionShown->FadeDuration / 100;
+		}
+	}
+
+	return 0;
+}
+
 VOID CALLBACK UpdateMutationsTick(PVOID lpParam, BOOLEAN TimerOrWaitFired)
 {
 	struct channelpoints_data* cpd = lpParam;
+
+	if(cpd == NULL)
+		return;
 
 	if(cpd->CurrentState == State_Read)
 	{
 		if(TryGetRedemption(cpd))
 		{
 			cpd->CurrentState = State_FadeIn;
-			ChangeTimerQueueTimer(cpd->TimerQueue, cpd->Timer, (ULONG)cpd->CurrentRedemptionShown->FadeDuration / 100, (ULONG)cpd->CurrentRedemptionShown->FadeDuration / 100);
+			ChangeTimerQueueTimer(cpd->TimerQueue, cpd->TimerHandle, (ULONG)cpd->CurrentRedemptionShown->FadeDuration / 100, (ULONG)cpd->CurrentRedemptionShown->FadeDuration / 100);
 		}
 	}
 	
@@ -149,20 +221,20 @@ VOID CALLBACK UpdateMutationsTick(PVOID lpParam, BOOLEAN TimerOrWaitFired)
 		if(IncrementImageAlpha(cpd))
 		{
 			cpd->CurrentState = State_Wait;
-			ChangeTimerQueueTimer(cpd->TimerQueue, cpd->Timer, (ULONG)cpd->CurrentRedemptionShown->ShowDuration, (ULONG)cpd->CurrentRedemptionShown->ShowDuration);
+			ChangeTimerQueueTimer(cpd->TimerQueue, cpd->TimerHandle, (ULONG)cpd->CurrentRedemptionShown->ShowDuration, (ULONG)cpd->CurrentRedemptionShown->ShowDuration);
 		}
 	}
 	else if(cpd->CurrentState == State_Wait)
 	{
 		cpd->CurrentState = State_FadeOut;
-		ChangeTimerQueueTimer(cpd->TimerQueue, cpd->Timer, (ULONG)cpd->CurrentRedemptionShown->FadeDuration / 100, (ULONG)cpd->CurrentRedemptionShown->FadeDuration / 100);
+		ChangeTimerQueueTimer(cpd->TimerQueue, cpd->TimerHandle, (ULONG)cpd->CurrentRedemptionShown->FadeDuration / 100, (ULONG)cpd->CurrentRedemptionShown->FadeDuration / 100);
 	}
 	else if(cpd->CurrentState == State_FadeOut)
 	{
 		if(DecrementImageAlpha(cpd))
 		{
 			cpd->CurrentState = State_Read;
-			ChangeTimerQueueTimer(cpd->TimerQueue, cpd->Timer, 1000, 1000);
+			ChangeTimerQueueTimer(cpd->TimerQueue, cpd->TimerHandle, 1000, 1000);
 		}
 	}
 }
@@ -173,6 +245,8 @@ static void* channelpoints_thread(void* data)
 
 	while(os_event_try(cpd->Event) == EAGAIN)
 	{
+		os_sleep_ms(1000);
+
 		TryGetRedemption(data);
 
 		while(cpd->CurrentRedemptionShown) //Complete all the queued up redemptions
@@ -183,10 +257,6 @@ static void* channelpoints_thread(void* data)
 			
 			TryGetRedemption(data);
 		}
-
-		time_t ti = time(NULL);
-
-		os_sleep_ms(10000);
 	}
 
 	return NULL;
@@ -200,9 +270,22 @@ static const char* channelpoints_getname(void* unused)
 
 static void channelpoints_get_defaults(obs_data_t* data)
 {
-	obs_data_set_default_string(data, "media_exts0", ".jpg;.jpeg;.png;.gif");
-	obs_data_set_default_int(data, "media_fade_duration0", 700);
-	obs_data_set_default_int(data, "media_show_duration0", 5000);
+	obs_data_set_default_int(data, "redemptions_count", 1);
+
+	for(int i = 0 ; i < MAX_REDEMPTION_COUNT ; ++i)
+	{
+		char property_name[64] = { 0 };
+		snprintf(property_name, 64, "media_exts%d", i);
+		obs_data_set_default_string(data, property_name, ".jpg;.jpeg;.png;.gif");
+
+		memset(property_name, 0, strlen(property_name));
+		snprintf(property_name, 64, "media_fade_duration%d", i);
+		obs_data_set_default_int(data, property_name, 700);
+
+		memset(property_name, 0, strlen(property_name));
+		snprintf(property_name, 64, "media_show_duration%d", i);
+		obs_data_set_default_int(data, property_name, 5000);
+	}
 }
 
 static void SetSourceImage(void* data, const char* filePath)
@@ -237,6 +320,31 @@ static bool TryStartShowingRedemption(void* data, RedemptionData* Redemption)
 	dstr_free(&RandomFile);
 
 	return ShowingRedemption;
+}
+
+static void UpdateChannelURL(void* data, const char* NewChanneName)
+{
+	struct channelpoints_data* cpd = data;
+
+	if(NewChanneName != NULL && strlen(NewChanneName) > 0)
+	{
+		if(dstr_is_empty(&cpd->ChannelName) || dstr_cmp(&cpd->ChannelName, NewChanneName) != 0)
+		{
+			if(ChangeChannelURL(NewChanneName))
+			{
+				dstr_copy(&cpd->ChannelName, NewChanneName);
+			}
+		}
+	}
+}
+
+static void WebViewInitialisedCallback()
+{
+	obs_data_t* Settings = obs_source_get_settings(CPD->MainSource);
+
+	UpdateChannelURL(CPD, obs_data_get_string(Settings, "channel_name"));
+
+	obs_data_release(Settings);
 }
 
 static void channelpoints_activate(void* data)
@@ -313,23 +421,11 @@ static void channelpoints_save(void* data, obs_data_t* settings)
 {
 	struct channelpoints_data* cpd = data;
 
-	const char* NewChanneName = obs_data_get_string(settings, "channel_name");
-
-	if(strlen(NewChanneName) > 0)
-	{
-		if(dstr_is_empty(&cpd->ChannelName) || dstr_cmp(&cpd->ChannelName, NewChanneName) != 0)
-		{
-			dstr_copy(&cpd->ChannelName, NewChanneName);
-			ChangeChannelURL(cpd->ChannelName.array);
-		}
-	}
+	UpdateChannelURL(data, obs_data_get_string(settings, "channel_name"));
 
 	cpd->RedemptionCount = (int)obs_data_get_int(settings, "redemptions_count");
 	
-	if(cpd->RedemptionCount < 1) //Getting the setting sometimes returns zero
-		cpd->RedemptionCount = 1;
-
-	for(int i = (int)cpd->Redemptions.num ; i <= cpd->RedemptionCount ; ++i)
+	for(int i = (int)cpd->Redemptions.num ; i < cpd->RedemptionCount ; ++i)
 	{
 		darray_push_back_new(sizeof(RedemptionData), &cpd->Redemptions);
 	}
@@ -383,7 +479,7 @@ static obs_properties_t* channelpoints_properties(void* data)
 		"redemptions_count",
 		"Redemptions Count\n('OK' and reopen to refresh)",
 		1,
-		40,
+		MAX_REDEMPTION_COUNT,
 		1);
 
 	for(int i = 0 ; i < cpd->RedemptionCount ; ++i)
@@ -449,6 +545,10 @@ static void channelpoints_destroy(void* data)
 
 	if(cpd)
 	{
+		cpd->Ticking = false;
+
+		DeleteTimerQueueEx(cpd->TimerQueue, NULL);
+
 		obs_data_t* Settings = obs_source_get_settings(cpd->MainSource);
 		obs_data_set_bool(Settings, "cpd_created", false);
 		obs_data_release(Settings);
@@ -492,22 +592,35 @@ static void channelpoints_destroy(void* data)
 		}
 
 		//os_event_destroy(cpd->Event);
+
 		bfree(cpd);
+		cpd = NULL;
 	}
 }
 
 static void* channelpoints_create(obs_data_t* settings, obs_source_t* source)
 {
 	struct channelpoints_data* cpd = bzalloc(sizeof(struct channelpoints_data));
+	CPD = cpd;
 	cpd->Initialised = false;
 	cpd->CurrentRedemptionShown = NULL;
+	InitialisedCallback = WebViewInitialisedCallback;
 	dstr_init(&cpd->ChannelName);
 	channelpoints_save(cpd, settings); //Update data from settings
 	cpd->MainSource = source;
 
 	cpd->CurrentState = State_Read;
-	cpd->TimerQueue = CreateTimerQueue();
-	CreateTimerQueueTimer(&cpd->Timer, cpd->TimerQueue, (WAITORTIMERCALLBACK)UpdateMutationsTick, cpd, 1000, 1000, 0);
+
+	cpd->TickThread = CreateThread(
+		NULL,                   // default security attributes
+		0,                      // use default stack size  
+		Tick,					// thread function name
+		cpd,					// argument to thread function 
+		0,                      // use default creation flags 
+		NULL);					// returns the thread identifier
+
+	//cpd->TimerQueue = CreateTimerQueue();
+	//CreateTimerQueueTimer(&cpd->TimerHandle, cpd->TimerQueue, (WAITORTIMERCALLBACK)UpdateMutationsTick, cpd, 1000, 1000, 0);
 
 	//if(os_event_init(&cpd->Event, OS_EVENT_TYPE_MANUAL) != 0)
 	//	goto fail;
