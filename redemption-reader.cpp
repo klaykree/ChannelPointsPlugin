@@ -43,17 +43,97 @@ void (*InitialisedCallback)(void) = NULL;
 
 HANDLE MessageLoopThread = NULL;
 
+WCHAR AppDataLocalDir[128];
+
 // Forward declarations of functions included in this code module:
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 DWORD WINAPI MessageLoop(LPVOID lpParam);
 
 // Pointer to WebView window
-static wil::com_ptr<IWebView2WebView> WebviewWindow = nullptr;
+static wil::com_ptr<ICoreWebView2Host> WebViewWindow = nullptr;
+static wil::com_ptr<ICoreWebView2> WebView = nullptr;
 
 std::queue<std::wstring> Mutations;
 std::queue<int> QueuedRedemptions;
 
 std::wstring ChannelURL;
+
+void InitialiseWebView();
+
+void SetWebViewFailedEvent()
+{
+	WebView->add_ProcessFailed(
+		Callback<ICoreWebView2ProcessFailedEventHandler>(
+			[](ICoreWebView2* sender, ICoreWebView2ProcessFailedEventArgs* args) -> HRESULT
+			{
+				Initialised = false;
+				blog(LOG_WARNING, "ChannelPointsDisplay - WebView process failed - attempting to restart");
+
+				InitialiseWebView();
+
+				return S_OK;
+			}).Get(), nullptr);
+}
+
+void InitialiseWebView()
+{
+	CreateCoreWebView2EnvironmentWithDetails(nullptr, AppDataLocalDir, nullptr, Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
+		[](HRESULT result, ICoreWebView2Environment* env) -> HRESULT
+		{
+			// Create a WebView, whose parent is the main window hWnd
+			env->CreateCoreWebView2Host(hwnd, Callback<ICoreWebView2CreateCoreWebView2HostCompletedHandler>(
+				[](HRESULT result, ICoreWebView2Host* webview) -> HRESULT
+				{
+					if(webview != nullptr) {
+						WebViewWindow = webview;
+						WebViewWindow->get_CoreWebView2(&WebView);
+					}
+
+					// Resize WebView to fit the bounds of the parent window
+					RECT bounds;
+					GetClientRect(hwnd, &bounds);
+					WebViewWindow->put_Bounds(bounds);
+
+					WebView->AddScriptToExecuteOnDocumentCreated(
+						L"window.addEventListener('load', function() {\
+							var $$expectedId = 'chat-list__lines';\
+							__webview_observers__ = window.__webview_observers__ || {};\
+								(function() {\
+									var target = document.getElementsByClassName($$expectedId)[0];\
+									__webview_observers__[$$expectedId] = {\
+											observer: new MutationObserver(function(mutations) {\
+												if(mutations[0]['addedNodes'].length > 0) {\
+													let addedNode = mutations[0]['addedNodes'][0];\
+													if(addedNode.children.length > 0) {\
+														console.log('before check ' + addedNode.children[0].className);\
+														if(addedNode.children[0].className.includes('channel-points-reward-line')) {\
+															__webview_observers__[$$expectedId].mutations.push(addedNode.children[0].textContent.toLowerCase());\
+															console.log('after check ' + addedNode.children[0].className);\
+														}\
+													}\
+												}\
+											})\
+									};\
+									__webview_observers__[$$expectedId].mutations = [];\
+									var config = { attributes: true, childList : true, characterData : true, subtree : true };\
+									__webview_observers__[$$expectedId].observer.observe(target, config);\
+							})();\
+						});", nullptr);
+
+					SetWebViewFailedEvent();
+
+					Initialised = true;
+
+					ShowWindow(hwnd, SW_HIDE);
+
+					if(InitialisedCallback != NULL)
+						InitialisedCallback();
+
+					return S_OK;
+				}).Get());
+			return S_OK;
+		}).Get());
+}
 
 void MakeWebView()
 {
@@ -119,82 +199,21 @@ void MakeWebView()
 	PWSTR AppDataLocal;
 	SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, NULL, &AppDataLocal);
 
-	WCHAR AppDataLocalDir[128];
 	wcscpy_s(AppDataLocalDir, AppDataLocal);
 	wcscat_s(AppDataLocalDir, 128, L"\\ChannelPointsDisplay");
-
+	
 	CoTaskMemFree(AppDataLocal);
 
-	CreateWebView2EnvironmentWithDetails(nullptr, AppDataLocalDir, nullptr, Callback<IWebView2CreateWebView2EnvironmentCompletedHandler>(
-			[](HRESULT result, IWebView2Environment* env) -> HRESULT {
-				// Create a WebView, whose parent is the main window hWnd
-				env->CreateWebView(hwnd, Callback<IWebView2CreateWebViewCompletedHandler>(
-					[](HRESULT result, IWebView2WebView* webview) -> HRESULT {
-						if(webview != nullptr) {
-							WebviewWindow = webview;
-						}
-
-						// Add a few settings for the webview
-						// this is a redundant demo step as they are the default settings values
-						IWebView2Settings* Settings;
-						WebviewWindow->get_Settings(&Settings);
-						Settings->put_IsScriptEnabled(TRUE);
-						Settings->put_AreDefaultScriptDialogsEnabled(TRUE);
-						Settings->put_IsWebMessageEnabled(TRUE);
-						
-						// Resize WebView to fit the bounds of the parent window
-						RECT bounds;
-						GetClientRect(hwnd, &bounds);
-						WebviewWindow->put_Bounds(bounds);
-						
-						// Schedule an async task to add initialization script that
-						// 1) Add an listener to print message from the host
-						// 2) Post document URL to the host
-						WebviewWindow->AddScriptToExecuteOnDocumentCreated(
-							L"window.addEventListener('load', function() {\
-							var $$expectedId = 'chat-list__lines';\
-							__webview_observers__ = window.__webview_observers__ || {};\
-								(function() {\
-									var target = document.getElementsByClassName($$expectedId)[0];\
-									__webview_observers__[$$expectedId] = {\
-											observer: new MutationObserver(function(mutations) {\
-												if(mutations[0]['addedNodes'].length > 0) {\
-													let addedNode = mutations[0]['addedNodes'][0];\
-													if(addedNode.children.length > 0) {\
-														console.log('before check ' + addedNode.children[0].className);\
-														if(addedNode.children[0].className.includes('channel-points-reward-line')) {\
-															__webview_observers__[$$expectedId].mutations.push(addedNode.children[0].textContent.toLowerCase());\
-															console.log('after check ' + addedNode.children[0].className);\
-														}\
-													}\
-												}\
-											})\
-									};\
-									__webview_observers__[$$expectedId].mutations = [];\
-									var config = { attributes: true, childList : true, characterData : true, subtree : true };\
-									__webview_observers__[$$expectedId].observer.observe(target, config);\
-							})();\
-						});", nullptr);
-
-						Initialised = true;
-
-						ShowWindow(hwnd, SW_HIDE);
-
-						if(InitialisedCallback != NULL)
-							InitialisedCallback();
-
-						return S_OK;
-					}).Get());
-				return S_OK;
-			}).Get());
+	InitialiseWebView();
 }
 
 void TryRetrieveMutation()
 {
+	//Force the window to update otherwise the following script execute will miss some mutations
 	ShowWindow(hwnd, SW_HIDE);
 	UpdateWindow(hwnd);
 
-	HRESULT result = WebviewWindow->ExecuteScript(
+	HRESULT result = WebView->ExecuteScript(
 		//general message: "justinfan54: hi" (with quotes)
 		//redemption: "klaykree redeemed nice69" (with quotes)
 
@@ -204,9 +223,16 @@ void TryRetrieveMutation()
 					window.__webview_observers__['chat-list__lines'].mutations.splice(0, 1);\
 				}\
 				mutationString;",
-		Callback<IWebView2ExecuteScriptCompletedHandler>(
+		Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
 			[](HRESULT errorCode, LPCWSTR resultObjectAsJson) -> HRESULT {
 				std::wstring Result = std::wstring(resultObjectAsJson);
+
+				//For testing redemptions without requiring actual redemptions
+				/*if(rand() % 20 == 0)
+				{
+					const std::scoped_lock<std::mutex> lock(MutationsMutex);
+					Mutations.push(L"klaykree redeemed nice69");
+				}*/
 
 				if(Result != L"null")
 				{
@@ -228,6 +254,11 @@ void TryRetrieveMutation()
 				}
 				return S_OK;
 			}).Get());
+
+	if(result != 0)
+	{
+		blog(LOG_WARNING, "ChannelPointsDisplay - Failed to execute script");
+	}
 }
 
 int GetLatestRedemption(struct darray* Redemptions, int RedemptionCount)
@@ -296,9 +327,9 @@ bool ChangeChannelURL(const char* ChannelName)
 	ChannelURL.append(WChanneName);
 	ChannelURL.append(L"/chat");
 
-	if(WebviewWindow != nullptr)
+	if(WebView != nullptr)
 	{
-		WebviewWindow->Navigate(ChannelURL.c_str());
+		HRESULT Result = WebView->Navigate(ChannelURL.c_str());
 		return true;
 	}
 
@@ -359,9 +390,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	switch(message)
 	{
 	case WM_CLOSE:
-		if(WebviewWindow != nullptr)
+		if(WebViewWindow != nullptr)
 		{
-			WebviewWindow->Close();
+			blog(LOG_INFO, "ChannelPointsDisplay - Closing webview");
+			WebViewWindow->Close();
 		}
 
 		//Close thread
