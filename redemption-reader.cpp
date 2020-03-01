@@ -77,13 +77,27 @@ void SetWebViewFailedEvent()
 
 void InitialiseWebView()
 {
-	CreateCoreWebView2EnvironmentWithDetails(nullptr, AppDataLocalDir, nullptr, Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
+	CreateCoreWebView2EnvironmentWithDetails(nullptr, AppDataLocalDir, nullptr,
+		Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
 		[](HRESULT result, ICoreWebView2Environment* env) -> HRESULT
 		{
+			if(result != S_OK)
+			{
+				blog(LOG_WARNING, "ChannelPointsDisplay - Failed to create WebView2 environment (%i)", result);
+				return result;
+			}
+
 			// Create a WebView, whose parent is the main window hWnd
-			env->CreateCoreWebView2Host(hwnd, Callback<ICoreWebView2CreateCoreWebView2HostCompletedHandler>(
+			env->CreateCoreWebView2Host(hwnd,
+				Callback<ICoreWebView2CreateCoreWebView2HostCompletedHandler>(
 				[](HRESULT result, ICoreWebView2Host* webview) -> HRESULT
 				{
+					if(result != S_OK)
+					{
+						blog(LOG_WARNING, "ChannelPointsDisplay - Failed to create WebView2 host (%i)", result);
+						return result;
+					}
+
 					if(webview != nullptr) {
 						WebViewWindow = webview;
 						WebViewWindow->get_CoreWebView2(&WebView);
@@ -118,7 +132,16 @@ void InitialiseWebView()
 									var config = { attributes: true, childList : true, characterData : true, subtree : true };\
 									__webview_observers__[$$expectedId].observer.observe(target, config);\
 							})();\
-						});", nullptr);
+						});",
+						Callback<ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler>(
+						[](HRESULT result, LPCWSTR id) -> HRESULT
+						{
+							if(result != S_OK)
+							{
+								blog(LOG_WARNING, "ChannelPointsDisplay - Failed to add script WebView2 (%i)", result);
+							}
+							return result;
+						}).Get());
 
 					SetWebViewFailedEvent();
 
@@ -225,6 +248,11 @@ void TryRetrieveMutation()
 				mutationString;",
 		Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
 			[](HRESULT errorCode, LPCWSTR resultObjectAsJson) -> HRESULT {
+				if(errorCode != S_OK)
+				{
+					blog(LOG_WARNING, "ChannelPointsDisplay - Failed to execute script (%i)", errorCode);
+				}
+
 				std::wstring Result = std::wstring(resultObjectAsJson);
 
 				//For testing redemptions without requiring actual redemptions
@@ -254,11 +282,6 @@ void TryRetrieveMutation()
 				}
 				return S_OK;
 			}).Get());
-
-	if(result != 0)
-	{
-		blog(LOG_WARNING, "ChannelPointsDisplay - Failed to execute script");
-	}
 }
 
 int GetLatestRedemption(struct darray* Redemptions, int RedemptionCount)
