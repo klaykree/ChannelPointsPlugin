@@ -10,6 +10,9 @@ typedef struct RedemptionData
 	struct dstr Title;
 	struct dstr Directory;
 	struct dstr MediaExtensions;
+	struct dstr ToggleSource;
+	struct dstr ActivateSource;
+	struct dstr DeactivateSource;
 	long long FadeDuration;
 	long long ShowDuration;
 } RedemptionData;

@@ -120,6 +120,70 @@ static bool ImageSourceValid()
 	return ImageItem != NULL;
 }
 
+bool ToggleSource(void* SourceNameToToggle, obs_source_t* SceneSource)
+{
+	obs_scene_t* Scene = obs_scene_from_source(SceneSource);
+	const char* Name = SourceNameToToggle;
+	obs_sceneitem_t* SceneItem = obs_scene_find_source(Scene, Name);
+	if(SceneItem)
+	{
+		bool Toggle = !obs_sceneitem_visible(SceneItem);
+		obs_sceneitem_set_visible(SceneItem, Toggle);
+		return false; //Finish
+	}
+
+	return true; //Continue enumeration
+}
+
+bool ActivateSource(void* SourceNameToActivate, obs_source_t* SceneSource)
+{
+	obs_scene_t* Scene = obs_scene_from_source(SceneSource);
+	const char* Name = SourceNameToActivate;
+	obs_sceneitem_t* SceneItem = obs_scene_find_source(Scene, Name);
+	if(SceneItem)
+	{
+		obs_sceneitem_set_visible(SceneItem, true);
+		return false; //Finish
+	}
+
+	return true; //Continue enumeration
+}
+
+bool DeactivateSource(void* SourceNameToDeactivate, obs_source_t* SceneSource)
+{
+	obs_scene_t* Scene = obs_scene_from_source(SceneSource);
+	const char* Name = SourceNameToDeactivate;
+	obs_sceneitem_t* SceneItem = obs_scene_find_source(Scene, Name);
+	if(SceneItem)
+	{
+		obs_sceneitem_set_visible(SceneItem, false);
+		return false; //Finish
+	}
+
+	return true; //Continue enumeration
+}
+
+static void ChangeSourceVisibilities(RedemptionData* Redemption)
+{
+	if(Redemption)
+	{
+		if(!dstr_is_empty(&Redemption->ToggleSource))
+		{
+			obs_enum_scenes(ToggleSource, Redemption->ToggleSource.array);
+		}
+
+		if(!dstr_is_empty(&Redemption->ActivateSource))
+		{
+			obs_enum_scenes(ActivateSource, Redemption->ActivateSource.array);
+		}
+
+		if(!dstr_is_empty(&Redemption->DeactivateSource))
+		{
+			obs_enum_scenes(DeactivateSource, Redemption->DeactivateSource.array);
+		}
+	}
+}
+
 static bool TryGetRedemption(void* data)
 {
 	struct channelpoints_data* cpd = data;
@@ -128,6 +192,7 @@ static bool TryGetRedemption(void* data)
 	if(RedemptionIndex != -1)
 	{
 		RedemptionData* Redemption = (RedemptionData*)darray_item(sizeof(RedemptionData), &cpd->Redemptions, RedemptionIndex);
+		ChangeSourceVisibilities(Redemption);
 		return TryStartShowingRedemption(data, Redemption);
 	}
 	else
@@ -341,9 +406,7 @@ static void UpdateChannelURL(void* data, const char* NewChanneName)
 static void WebViewInitialisedCallback()
 {
 	obs_data_t* Settings = obs_source_get_settings(CPD->MainSource);
-
 	UpdateChannelURL(CPD, obs_data_get_string(Settings, "channel_name"));
-
 	obs_data_release(Settings);
 }
 
@@ -437,7 +500,8 @@ static void channelpoints_save(void* data, obs_data_t* settings)
 		char property_name[64] = { 0 };
 		snprintf(property_name, 64, "redemption_title%d", i);
 		char* Title = (char*)obs_data_get_string(settings, property_name);
-		for(int i = 0 ; Title[i] ; ++i) {
+		for(int i = 0 ; Title[i] ; ++i)
+		{
 			Title[i] = tolower(Title[i]);
 		}
 		dstr_copy(&Redemption->Title, Title);
@@ -449,10 +513,23 @@ static void channelpoints_save(void* data, obs_data_t* settings)
 		memset(property_name, 0, strlen(property_name));
 		snprintf(property_name, 64, "media_exts%d", i);
 		char* Extentions = (char*)obs_data_get_string(settings, property_name);
-		for(int i = 0 ; Extentions[i] ; ++i) {
+		for(int i = 0 ; Extentions[i] ; ++i)
+		{
 			Extentions[i] = tolower(Extentions[i]);
 		}
 		dstr_copy(&Redemption->MediaExtensions, Extentions);
+
+		memset(property_name, 0, strlen(property_name));
+		snprintf(property_name, 64, "source_to_toggle%d", i);
+		dstr_copy(&Redemption->ToggleSource, obs_data_get_string(settings, property_name));
+
+		memset(property_name, 0, strlen(property_name));
+		snprintf(property_name, 64, "source_to_activate%d", i);
+		dstr_copy(&Redemption->ActivateSource, obs_data_get_string(settings, property_name));
+
+		memset(property_name, 0, strlen(property_name));
+		snprintf(property_name, 64, "source_to_deactivate%d", i);
+		dstr_copy(&Redemption->DeactivateSource, obs_data_get_string(settings, property_name));
 
 		memset(property_name, 0, strlen(property_name));
 		snprintf(property_name, 64, "media_fade_duration%d", i);
@@ -514,6 +591,33 @@ static obs_properties_t* channelpoints_properties(void* data)
 			OBS_TEXT_DEFAULT);
 
 		memset(property_name, 0, strlen(property_name));
+		snprintf(property_name, 64, "source_to_toggle%d", i);
+		memset(description, 0, strlen(description));
+		snprintf(description, 64, "Source to toggle visibility (%d)", i);
+		obs_properties_add_text(props,
+			property_name,
+			description,
+			OBS_TEXT_DEFAULT);
+
+		memset(property_name, 0, strlen(property_name));
+		snprintf(property_name, 64, "source_to_activate%d", i);
+		memset(description, 0, strlen(description));
+		snprintf(description, 64, "Source to activate visibility (%d)", i);
+		obs_properties_add_text(props,
+			property_name,
+			description,
+			OBS_TEXT_DEFAULT);
+
+		memset(property_name, 0, strlen(property_name));
+		snprintf(property_name, 64, "source_to_deactivate%d", i);
+		memset(description, 0, strlen(description));
+		snprintf(description, 64, "Source to deactivate visibility (%d)", i);
+		obs_properties_add_text(props,
+			property_name,
+			description,
+			OBS_TEXT_DEFAULT);
+
+		memset(property_name, 0, strlen(property_name));
 		snprintf(property_name, 64, "media_fade_duration%d", i);
 		memset(description, 0, strlen(description));
 		snprintf(description, 64, "Fade Duration (milliseconds) (%d)", i);
@@ -547,13 +651,13 @@ static void channelpoints_destroy(void* data)
 	{
 		cpd->Ticking = false;
 
-		DeleteTimerQueueEx(cpd->TimerQueue, NULL);
+		StopRedemptionReader();
+
+		//DeleteTimerQueueEx(cpd->TimerQueue, NULL);
 
 		obs_data_t* Settings = obs_source_get_settings(cpd->MainSource);
 		obs_data_set_bool(Settings, "cpd_created", false);
 		obs_data_release(Settings);
-
-		StopRedemptionReader();
 
 		//obs_sceneitem_group_remove_item(cpd->groupItem, cpd->mainItem);
 		//obs_sceneitem_group_remove_item(cpd->groupItem, cpd->imageItem);
@@ -580,6 +684,9 @@ static void channelpoints_destroy(void* data)
 			dstr_free(&Redemption->Directory);
 			dstr_free(&Redemption->MediaExtensions);
 			dstr_free(&Redemption->Title);
+			dstr_free(&Redemption->ToggleSource);
+			dstr_free(&Redemption->ActivateSource);
+			dstr_free(&Redemption->DeactivateSource);
 		}
 
 		darray_free(&cpd->Redemptions);

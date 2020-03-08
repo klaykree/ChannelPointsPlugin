@@ -30,7 +30,7 @@ bool GetRandomFile(const char* Directory, const char* Extensions, struct dstr* R
 
 		for(const auto& Entry : std::filesystem::directory_iterator(Directory))
 		{
-			if(ExtensionList.contains(Entry.path().extension().string()))
+			if(ExtensionList.find(Entry.path().extension().string()) != ExtensionList.end())
 			{
 				Files.push_back(Entry.path().generic_wstring());
 			}

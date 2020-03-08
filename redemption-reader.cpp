@@ -50,8 +50,9 @@ LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 DWORD WINAPI MessageLoop(LPVOID lpParam);
 
 // Pointer to WebView window
-static wil::com_ptr<ICoreWebView2Host> WebViewWindow = nullptr;
-static wil::com_ptr<ICoreWebView2> WebView = nullptr;
+//static wil::com_ptr<ICoreWebView2Host> WebViewWindow = nullptr;
+//static wil::com_ptr<ICoreWebView2> WebView = nullptr;
+static wil::com_ptr<IWebView2WebView> WebView = nullptr; //webview rollback
 
 std::queue<std::wstring> Mutations;
 std::queue<int> QueuedRedemptions;
@@ -63,8 +64,10 @@ void InitialiseWebView();
 void SetWebViewFailedEvent()
 {
 	WebView->add_ProcessFailed(
-		Callback<ICoreWebView2ProcessFailedEventHandler>(
-			[](ICoreWebView2* sender, ICoreWebView2ProcessFailedEventArgs* args) -> HRESULT
+		//Callback<ICoreWebView2ProcessFailedEventHandler>(
+		Callback<IWebView2ProcessFailedEventHandler>( //webview rollback
+			//[](ICoreWebView2* sender, ICoreWebView2ProcessFailedEventArgs* args) -> HRESULT
+			[](IWebView2WebView* sender, IWebView2ProcessFailedEventArgs* args) -> HRESULT //webview rollback
 			{
 				Initialised = false;
 				blog(LOG_WARNING, "ChannelPointsDisplay - WebView process failed - attempting to restart");
@@ -77,36 +80,44 @@ void SetWebViewFailedEvent()
 
 void InitialiseWebView()
 {
-	CreateCoreWebView2EnvironmentWithDetails(nullptr, AppDataLocalDir, nullptr,
-		Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
-		[](HRESULT result, ICoreWebView2Environment* env) -> HRESULT
+	//HRESULT result = CreateCoreWebView2EnvironmentWithDetails(nullptr, AppDataLocalDir, nullptr,
+	HRESULT result = CreateWebView2EnvironmentWithDetails(nullptr, AppDataLocalDir, nullptr, //webview rollback
+		//Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
+		Callback<IWebView2CreateWebView2EnvironmentCompletedHandler>( //webview rollback
+		//[](HRESULT result, ICoreWebView2Environment* env) -> HRESULT
+		[](HRESULT result, IWebView2Environment* env) -> HRESULT //webview rollback
 		{
 			if(result != S_OK)
 			{
-				blog(LOG_WARNING, "ChannelPointsDisplay - Failed to create WebView2 environment (%i)", result);
+				blog(LOG_WARNING, "ChannelPointsDisplay - Failed to create WebView2 environment (error #%i)", result);
 				return result;
 			}
 
 			// Create a WebView, whose parent is the main window hWnd
-			env->CreateCoreWebView2Host(hwnd,
-				Callback<ICoreWebView2CreateCoreWebView2HostCompletedHandler>(
-				[](HRESULT result, ICoreWebView2Host* webview) -> HRESULT
+			//env->CreateCoreWebView2Host(hwnd,
+			env->CreateWebView(hwnd, //webview rollback
+				//Callback<ICoreWebView2CreateCoreWebView2HostCompletedHandler>(
+				Callback<IWebView2CreateWebViewCompletedHandler>( //webview rollback
+				//[](HRESULT result, ICoreWebView2Host* webview) -> HRESULT
+				[](HRESULT result, IWebView2WebView* webview) -> HRESULT //webview rollback
 				{
 					if(result != S_OK)
 					{
-						blog(LOG_WARNING, "ChannelPointsDisplay - Failed to create WebView2 host (%i)", result);
+						blog(LOG_WARNING, "ChannelPointsDisplay - Failed to create WebView2 host (error #%i)", result);
 						return result;
 					}
 
 					if(webview != nullptr) {
-						WebViewWindow = webview;
-						WebViewWindow->get_CoreWebView2(&WebView);
+						//WebViewWindow = webview;
+						//WebViewWindow->get_CoreWebView2(&WebView);
+						WebView = webview; //webview rollback
 					}
 
 					// Resize WebView to fit the bounds of the parent window
 					RECT bounds;
 					GetClientRect(hwnd, &bounds);
-					WebViewWindow->put_Bounds(bounds);
+					//WebViewWindow->put_Bounds(bounds);
+					WebView->put_Bounds(bounds); //webview rollback
 
 					WebView->AddScriptToExecuteOnDocumentCreated(
 						L"window.addEventListener('load', function() {\
@@ -119,10 +130,8 @@ void InitialiseWebView()
 												if(mutations[0]['addedNodes'].length > 0) {\
 													let addedNode = mutations[0]['addedNodes'][0];\
 													if(addedNode.children.length > 0) {\
-														console.log('before check ' + addedNode.children[0].className);\
 														if(addedNode.children[0].className.includes('channel-points-reward-line')) {\
 															__webview_observers__[$$expectedId].mutations.push(addedNode.children[0].textContent.toLowerCase());\
-															console.log('after check ' + addedNode.children[0].className);\
 														}\
 													}\
 												}\
@@ -133,13 +142,15 @@ void InitialiseWebView()
 									__webview_observers__[$$expectedId].observer.observe(target, config);\
 							})();\
 						});",
-						Callback<ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler>(
+						//Callback<ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler>(
+						Callback<IWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler>( //webview rollback
 						[](HRESULT result, LPCWSTR id) -> HRESULT
 						{
 							if(result != S_OK)
 							{
-								blog(LOG_WARNING, "ChannelPointsDisplay - Failed to add script WebView2 (%i)", result);
+								blog(LOG_WARNING, "ChannelPointsDisplay - Failed to add script WebView2 (error #%i)", result);
 							}
+
 							return result;
 						}).Get());
 
@@ -149,13 +160,18 @@ void InitialiseWebView()
 
 					ShowWindow(hwnd, SW_HIDE);
 
+					blog(LOG_INFO, "ChannelPointsDisplay - Initialised webview");
+
 					if(InitialisedCallback != NULL)
 						InitialisedCallback();
 
-					return S_OK;
+					return result;
 				}).Get());
-			return S_OK;
+			return result;
 		}).Get());
+
+	if(result != S_OK)
+		blog(LOG_WARNING, "ChannelPointsDisplay - Create CoreWebView failed (error #%i) - likely requires new Edge browser", result);
 }
 
 void MakeWebView()
@@ -246,7 +262,8 @@ void TryRetrieveMutation()
 					window.__webview_observers__['chat-list__lines'].mutations.splice(0, 1);\
 				}\
 				mutationString;",
-		Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
+		//Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
+		Callback<IWebView2ExecuteScriptCompletedHandler>( //webview rollback
 			[](HRESULT errorCode, LPCWSTR resultObjectAsJson) -> HRESULT {
 				if(errorCode != S_OK)
 				{
@@ -372,6 +389,8 @@ void StartRedemptionReader()
 
 void StopRedemptionReader()
 {
+	const std::scoped_lock<std::mutex> lock(MutationsMutex); //Avoids crashing if the mutex is locked elsewhere when closing OBS
+
 	DeleteTimerQueueEx(MutationsTimerQueue, NULL);
 	SendMessage(hwnd, WM_CLOSE, 0, 0);
 }
@@ -413,10 +432,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	switch(message)
 	{
 	case WM_CLOSE:
-		if(WebViewWindow != nullptr)
+		//if(WebViewWindow != nullptr)
+		if(WebView != nullptr) //webview rollback
 		{
 			blog(LOG_INFO, "ChannelPointsDisplay - Closing webview");
-			WebViewWindow->Close();
+			//WebViewWindow->Close();
+			WebView->Close(); //webview rollback
 		}
 
 		//Close thread
